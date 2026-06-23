@@ -15,6 +15,13 @@ impl Display for PandoraExitStatus {
     }
 }
 
+#[cfg(windows)]
+impl PandoraExitStatus {
+    pub fn code(&self) -> Option<i32> {
+        Some(self.0 as i32)
+    }
+}
+
 #[cfg(unix)]
 #[derive(Clone, Copy)]
 pub struct PandoraExitStatus(pub(crate) libc::c_int);
@@ -46,3 +53,15 @@ impl Debug for PandoraExitStatus {
         debug.finish()
     }
 }
+
+#[cfg(unix)]
+impl PandoraExitStatus {
+    pub fn code(&self) -> Option<i32> {
+        if libc::WIFEXITED(self.0) {
+            Some(libc::WEXITSTATUS(self.0))
+        } else {
+            None
+        }
+    }
+}
+
