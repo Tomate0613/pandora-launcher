@@ -333,11 +333,11 @@ pub fn spawn(mut command: PandoraCommand, sandbox: PandoraSandbox, context: &mut
 
     builder.bind_if_exists(BindType::ReadOnly, &resolved_executable);
 
-    for path in sandbox.allow_read {
-        builder.bind_if_exists(BindType::ReadOnly, &path);
-    }
     for path in sandbox.allow_write {
         builder.bind_if_exists(BindType::ReadWrite, &path);
+    }
+    for path in sandbox.allow_read {
+        builder.bind_if_exists(BindType::ReadOnly, &path);
     }
 
     // Create sandboxed xdg home directories
