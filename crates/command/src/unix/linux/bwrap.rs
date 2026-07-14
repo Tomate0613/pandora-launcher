@@ -124,7 +124,7 @@ impl BwrapBuilder {
                 break;
             } else {
                 for already_bound in &self.bound_paths {
-                    if path.starts_with(already_bound) {
+                    if path == *already_bound {
                         return;
                     }
                 }
@@ -141,7 +141,7 @@ impl BwrapBuilder {
         }
 
         for already_bound in &self.bound_paths {
-            if path.starts_with(already_bound) {
+            if path == *already_bound {
                 return;
             }
         }
