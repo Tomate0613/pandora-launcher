@@ -51,7 +51,10 @@ pub struct ExportOptions {
     pub include_saves: bool,
     pub include_mods: bool,
     pub include_resourcepacks: bool,
+    pub include_shaders: bool,
     pub include_configs: bool,
+    pub include_screenshots: bool,
+    pub include_backups: bool,
     pub include_logs: bool,
     pub include_cache: bool,
     pub include_synced: bool,
@@ -72,6 +75,11 @@ pub enum MessageToBackend {
     },
     DeleteInstance {
         id: InstanceID,
+    },
+    DuplicateInstance {
+        id: InstanceID,
+        name: Ustr,
+        modal_action: ModalAction,
     },
     ExportInstance {
         id: InstanceID,
@@ -146,6 +154,7 @@ pub enum MessageToBackend {
     StartInstance {
         id: InstanceID,
         quick_play: Option<QuickPlayLaunch>,
+        live_game_output: Option<tokio::sync::oneshot::Sender<tokio::sync::mpsc::UnboundedReceiver<GameOutputMsg>>>,
         modal_action: ModalAction,
     },
     RequestLoadWorlds {
@@ -204,6 +213,11 @@ pub enum MessageToBackend {
         content_id: InstanceContentID,
         modal_action: ModalAction,
     },
+    UnzipModpack {
+        id: InstanceID,
+        content_id: InstanceContentID,
+        modal_action: ModalAction,
+    },
     Sleep5s,
     ReadLog {
         path: Arc<Path>,
@@ -249,8 +263,9 @@ pub enum MessageToBackend {
     DeleteAccount {
         uuid: Uuid,
     },
-    SetOpenGameOutputAfterLaunching {
-        value: bool,
+    ReorderAccounts {
+        from_index: usize,
+        delta: isize,
     },
     SetProxyConfiguration {
         config: ProxyConfig,
@@ -351,9 +366,6 @@ pub enum MessageToFrontend {
         content_folder: ContentFolder,
         content: Arc<[InstanceContentSummary]>,
     },
-    CreateGameOutputWindow {
-        receiver: tokio::sync::mpsc::UnboundedReceiver<GameOutputMsg>
-    },
     AddNotification {
         notification_type: BridgeNotificationType,
         message: Arc<str>,
@@ -394,6 +406,7 @@ pub struct SyncTargetState {
     pub is_file: bool,
     pub sync_count: usize,
     pub cannot_sync_count: usize,
+    pub cannot_sync_instances: Vec<Arc<str>>,
 }
 
 #[derive(Debug)]

@@ -63,7 +63,7 @@ pub const MAIN_FONT: &'static str = "Inter 24pt 24pt";
 #[cfg(not(windows))]
 pub const MAIN_FONT: &'static str = "Inter 24pt";
 
-actions!([Quit, CloseWindow, OpenSettings, Forwards, Backwards]);
+actions!([Quit, CloseWindow, OpenSettings, Forwards, Backwards, Confirm]);
 
 pub fn start(
     launcher_dir: PathBuf,
@@ -90,6 +90,8 @@ pub fn start(
 
         gpui_component::init(cx);
         InterfaceConfig::init(cx, launcher_dir.join("interface.json").into());
+
+        t::set_lang(&InterfaceConfig::get(cx).language);
 
         gpui_component::Theme::change(gpui_component::ThemeMode::Dark, None, cx);
 
@@ -157,6 +159,7 @@ pub fn start(
             KeyBinding::new("secondary-,", OpenSettings, None),
             KeyBinding::new("secondary-[", Backwards, None),
             KeyBinding::new("secondary-]", Forwards, None),
+            KeyBinding::new("enter", Confirm, None),
         ]);
 
         cx.on_action(|_: &Quit, cx| {
@@ -227,6 +230,7 @@ pub fn open_main_window(data: &DataEntities, cx: &mut App) -> AnyWindowHandle {
                 appears_transparent: use_custom_titlebar,
                 ..Default::default()
             }),
+            app_owns_titlebar_drag: use_custom_titlebar,
             window_bounds,
             window_decorations: Some(if use_custom_titlebar { WindowDecorations::Client } else { WindowDecorations::Server }),
             ..Default::default()
@@ -311,6 +315,19 @@ pub(crate) fn is_single_component_path(path: &str) -> bool {
     components.count() == 1
 }
 
+pub(crate) fn get_unique_instance_name(original_name: &str, existing_names: &[&str]) -> String {
+    if !existing_names.iter().any(|n| *n == original_name) {
+        return original_name.to_string();
+    }
+    for i in 1..100 {
+        let numbered = format!("{original_name} ({i})");
+        if !existing_names.iter().any(|n| *n == &numbered) {
+            return numbered;
+        }
+    }
+    String::new()
+}
+
 #[inline]
 pub(crate) fn labelled(label: impl Into<SharedString>, element: impl IntoElement) -> Div {
     gpui_component::v_flex().gap_0p5().child(div().text_sm().font_medium().child(label.into())).child(element)
@@ -331,4 +348,16 @@ pub(crate) fn open_folder(path: &Path, window: &mut Window, cx: &mut App) {
         let notification: Notification = (NotificationType::Error, t::file_system::open_folder::not_a_directory()).into();
         window.push_notification(notification.autohide(false), cx);
     }
+}
+
+pub fn format_downloads(downloads: u64) -> SharedString {
+    if downloads >= 1_000_000_000 {
+        t::instance::content::downloads::b((downloads / 10_000_000) as f64 / 100.0)
+    } else if downloads >= 1_000_000 {
+        t::instance::content::downloads::m((downloads / 10_000) as f64 / 100.0)
+    } else if downloads >= 10_000 {
+        t::instance::content::downloads::k((downloads / 10) as f64 / 100.0)
+    } else {
+        t::instance::content::downloads::n(downloads)
+    }.into()
 }

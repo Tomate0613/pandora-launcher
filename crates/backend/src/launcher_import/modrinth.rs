@@ -1,6 +1,6 @@
 use std::{io::Cursor, path::{Path, PathBuf}, sync::Arc};
 
-use bridge::{import::ImportFromOtherLauncherJob, modal_action::{ModalAction, ProgressTracker}};
+use bridge::{import::ImportFromOtherLauncherJob, modal_action::ModalAction};
 use image::ImageFormat;
 use rustc_hash::FxHashMap;
 use schema::{instance::InstanceConfiguration, loader::Loader};
@@ -19,14 +19,13 @@ pub fn import_instances_from_modrinth(backend: &BackendState, import_job: Import
         return Ok(());
     }
 
-    let all_tracker = ProgressTracker::new("Importing instances".into(), backend.send.clone());
-    modal_action.trackers.push(all_tracker.clone());
-    all_tracker.notify();
-
     let app_db = import_job.root.join("app.db");
     if !app_db.exists() {
+        modal_action.set_finished_with_error("Unable to find app.db in selected directory".into());
         return Ok(());
     }
+
+    let all_tracker = modal_action.push_tracker("Importing instances".into());
 
     let conn = rusqlite::Connection::open(app_db)?;
 
@@ -81,13 +80,10 @@ pub fn import_instances_from_modrinth(backend: &BackendState, import_job: Import
 
     for to_import in to_import {
         let title = format!("Importing {}", to_import.pandora_path.file_name().unwrap().to_string_lossy());
-        let tracker = ProgressTracker::new(title.into(), backend.send.clone());
-        modal_action.trackers.push(tracker.clone());
-        tracker.notify();
+        let tracker = modal_action.push_tracker(title.into());
 
         let Ok(configuration_bytes) = serde_json::to_vec(&to_import.instance_configuration) else {
             tracker.set_finished(bridge::modal_action::ProgressTrackerFinishType::Error);
-            tracker.notify();
             continue;
         };
 
@@ -97,10 +93,9 @@ pub fn import_instances_from_modrinth(backend: &BackendState, import_job: Import
         let target_dot_minecraft = to_import.pandora_path.join(".minecraft");
 
         _ = std::fs::create_dir_all(&target_dot_minecraft);
-        _ = crate::copy_content_recursive(&to_import.minecraft_folder, &target_dot_minecraft, false, &|copied, total| {
+        _ = crate::fs::copy_content_recursive(&to_import.minecraft_folder, &target_dot_minecraft, false, &|copied, total| {
             tracker.set_total(total as usize);
             tracker.set_count(copied as usize);
-            tracker.notify();
         });
 
         // Copy icon
@@ -110,12 +105,12 @@ pub fn import_instances_from_modrinth(backend: &BackendState, import_job: Import
             if let Ok(icon_bytes) = std::fs::read(icon_path) {
                 if let Ok(format) = image::guess_format(&icon_bytes) {
                     if format == ImageFormat::Png {
-                        _ = crate::write_safe(&to_import.pandora_path.join("icon.png"), &icon_bytes);
+                        _ = crate::fs::write_safe(&to_import.pandora_path.join("icon.png"), &icon_bytes);
                     } else if let Ok(image) = image::load_from_memory_with_format(&icon_bytes, format) {
                         let mut png_bytes = Vec::new();
                         let mut cursor = Cursor::new(&mut png_bytes);
                         if image.write_to(&mut cursor, image::ImageFormat::Png).is_ok() {
-                            _ = crate::write_safe(&to_import.pandora_path.join("icon.png"), &png_bytes);
+                            _ = crate::fs::write_safe(&to_import.pandora_path.join("icon.png"), &png_bytes);
                         }
                     }
                 }
@@ -124,17 +119,14 @@ pub fn import_instances_from_modrinth(backend: &BackendState, import_job: Import
 
         // Write info_v1.json
         let info_path = to_import.pandora_path.join("info_v1.json");
-        _ = crate::write_safe(&info_path, &configuration_bytes);
+        _ = crate::fs::write_safe(&info_path, &configuration_bytes);
 
         all_tracker.add_count(1);
-        all_tracker.notify();
 
         tracker.set_finished(bridge::modal_action::ProgressTrackerFinishType::Fast);
-        tracker.notify();
     }
 
     all_tracker.set_finished(bridge::modal_action::ProgressTrackerFinishType::Normal);
-    all_tracker.notify();
 
     Ok(())
 }
@@ -149,21 +141,59 @@ pub fn read_profiles_from_modrinth_db(modrinth: &Path) -> rusqlite::Result<Optio
 
     let conn = rusqlite::Connection::open(app_db)?;
 
-    let mut stmt = conn.prepare("SELECT path FROM profiles")?;
-    let mut query = stmt.query([])?;
+    let custom_dir = conn.query_one("SELECT custom_dir FROM settings", [], |row| {
+        row.get::<_, String>(0)
+    }).ok();
 
-    let mut paths = Vec::new();
+    let mut profile_dir_main = modrinth.join("profiles");
+    let mut profile_dir_fallback = None;
 
-    let profiles = modrinth.join("profiles");
-    while let Ok(Some(row)) = query.next() {
-        let path: String = row.get(0)?;
-        let profile = profiles.join(path);
-        if profile.is_dir() {
-            paths.push(profile.into());
-        } else {
-            log::warn!("Modrinth profile folder {:?} doesn't exist", profile);
+    if let Some(custom_dir) = custom_dir {
+        let custom_dir_path = Path::new(&custom_dir);
+
+        if custom_dir_path != modrinth {
+            log::info!("Changing import root to {:?} because of custom_dir", custom_dir_path);
+
+            profile_dir_fallback = Some(profile_dir_main);
+            profile_dir_main = custom_dir_path.join("profiles");
         }
     }
 
-    Ok(Some(paths))
+    if let Ok(mut stmt) = conn.prepare("SELECT path FROM instances") {
+        if let Ok(query) = stmt.query([]) {
+            return Ok(Some(paths_from_query(profile_dir_main, profile_dir_fallback, query)?));
+        }
+    }
+
+    let mut stmt = conn.prepare("SELECT path FROM profiles")?;
+    let query = stmt.query([])?;
+    Ok(Some(paths_from_query(profile_dir_main, profile_dir_fallback, query)?))
+}
+
+fn paths_from_query(profile_dir_main: PathBuf, profile_dir_fallback: Option<PathBuf>, mut query: rusqlite::Rows<'_>) -> Result<Vec<Arc<Path>>, rusqlite::Error> {
+    let mut paths = Vec::new();
+
+    while let Ok(Some(row)) = query.next() {
+        let path: String = row.get(0)?;
+
+        // Check main directory
+        let profile = profile_dir_main.join(&path);
+        if profile.is_dir() {
+            paths.push(profile.into());
+            continue;
+        }
+
+        // Check fallback directory (if not present in custom_dir)
+        if let Some(fallback) = &profile_dir_fallback {
+            let profile = fallback.join(&path);
+            if profile.is_dir() {
+                paths.push(profile.into());
+                continue;
+            }
+        }
+
+        log::warn!("Modrinth profile folder {:?} doesn't exist", profile);
+    }
+
+    Ok(paths)
 }

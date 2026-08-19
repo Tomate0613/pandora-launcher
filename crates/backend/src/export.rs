@@ -27,14 +27,13 @@ use schema::{
 };
 use sha1::{Digest as Sha1Digest, Sha1};
 use sha2::Sha512;
+use ustr::Ustr;
 use walkdir::WalkDir;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
 use crate::{
-    BackendState,
-    metadata::{
-        items::{CurseforgeFingerprintMetadataItem, ModrinthProjectsMetadataItem, ModrinthVersionsFromHashesMetadataItem},
-        manager::MetaLoadError,
+    BackendState, metadata::{
+        items::{CurseforgeFingerprintMetadataItem, FabricLoaderManifestMetadataItem, ForgeInstallerMavenMetadataItem, ModrinthProjectsMetadataItem, ModrinthVersionsFromHashesMetadataItem, NeoforgeInstallerMavenMetadataItem}, manager::MetaLoadError,
     },
 };
 
@@ -78,6 +77,20 @@ struct ExportInstanceData {
     sync_targets: SyncTargets,
 }
 
+impl ExportInstanceData {
+    async fn determine_loader_version(&self, backend: &BackendState) -> Option<Ustr> {
+        match self.configuration.loader {
+            Loader::Fabric => backend.meta.fetch(&FabricLoaderManifestMetadataItem).await.ok()
+                .and_then(|manifest| self.configuration.determine_fabric_loader_version(&manifest)),
+            Loader::Forge => backend.meta.fetch(&ForgeInstallerMavenMetadataItem).await.ok()
+                .and_then(|manifest| self.configuration.determine_forge_loader_version(&manifest)),
+            Loader::NeoForge => backend.meta.fetch(&NeoforgeInstallerMavenMetadataItem).await.ok()
+                .and_then(|manifest| self.configuration.determine_neoforge_loader_version(&manifest)),
+            Loader::Vanilla => None,
+        }
+    }
+}
+
 struct ModrinthResolvedFile {
     source: SafePath,
     sha1: String,
@@ -118,8 +131,7 @@ pub async fn export_instance(
     };
 
     let Some(instance) = instance_data else {
-        modal_action.set_error_message("Unable to export instance, unknown id".into());
-        modal_action.set_finished();
+        modal_action.set_finished_with_error("Unable to export instance, unknown id".into());
         return;
     };
 
@@ -131,15 +143,8 @@ pub async fn export_instance(
 
     if let Err(error) = result {
         match error {
-            ExportError::Cancelled => {
-                for tracker in modal_action.trackers.trackers.read().iter() {
-                    if tracker.get_finished_at().is_none() {
-                        tracker.set_finished(ProgressTrackerFinishType::Fast);
-                        tracker.notify();
-                    }
-                }
-            }
-            ExportError::Other(error) => modal_action.set_error_message(error.into()),
+            ExportError::Cancelled => modal_action.clear_trackers(),
+            ExportError::Other(error) => modal_action.set_finished_with_error(error.into()),
         }
     }
     modal_action.set_finished();
@@ -153,8 +158,7 @@ async fn export_instance_zip(
     modal_action: &ModalAction,
 ) -> Result<(), ExportError> {
     check_cancel(modal_action)?;
-    let tracker = ProgressTracker::new("Collecting files...".into(), backend.send.clone());
-    modal_action.trackers.push(tracker.clone());
+    let collect_tracker = modal_action.push_tracker("Collecting files...".into());
 
     let files = collect_files(
         &instance.root_path,
@@ -164,13 +168,10 @@ async fn export_instance_zip(
         &backend.directories.synced_dir,
         modal_action,
     )?;
-    tracker.notify();
-    tracker.set_finished(ProgressTrackerFinishType::Normal);
+    collect_tracker.set_finished(ProgressTrackerFinishType::Normal);
 
-    let write_tracker = ProgressTracker::new("Writing zip".into(), backend.send.clone());
-    modal_action.trackers.push(write_tracker.clone());
+    let write_tracker = modal_action.push_tracker("Writing zip".into());
     write_tracker.set_total(files.len());
-    write_tracker.notify();
 
     write_zip(output, &files, &[], &HashSet::new(), None, modal_action, &write_tracker)?;
     write_tracker.set_finished(ProgressTrackerFinishType::Normal);
@@ -185,8 +186,7 @@ async fn export_modrinth_pack(
     modal_action: &ModalAction,
 ) -> Result<(), ExportError> {
     check_cancel(modal_action)?;
-    let collect_tracker = ProgressTracker::new("Collecting files...".into(), backend.send.clone());
-    modal_action.trackers.push(collect_tracker.clone());
+    let collect_tracker = modal_action.push_tracker("Collecting files...".into());
 
     let files = collect_files(
         &instance.dot_minecraft_path,
@@ -196,11 +196,9 @@ async fn export_modrinth_pack(
         &backend.directories.synced_dir,
         modal_action,
     )?;
-    collect_tracker.notify();
     collect_tracker.set_finished(ProgressTrackerFinishType::Normal);
 
-    let hash_tracker = ProgressTracker::new("Hashing mods".into(), backend.send.clone());
-    modal_action.trackers.push(hash_tracker.clone());
+    let hash_tracker = modal_action.push_tracker("Hashing mods".into());
 
     let resolved = resolve_modrinth_files(backend, instance, options, &files, modal_action, &hash_tracker).await?;
     hash_tracker.set_finished(ProgressTrackerFinishType::Normal);
@@ -210,13 +208,12 @@ async fn export_modrinth_pack(
         exclude.insert(resolved_file.source.clone());
     }
 
-    let index_json = build_modrinth_index(instance, options, &resolved)?;
+    let loader_version = instance.determine_loader_version(backend).await;
+    let index_json = build_modrinth_index(instance, loader_version, options, &resolved)?;
     let extra_files = vec![("modrinth.index.json".to_string(), index_json)];
 
-    let write_tracker = ProgressTracker::new("Writing zip".into(), backend.send.clone());
-    modal_action.trackers.push(write_tracker.clone());
+    let write_tracker = modal_action.push_tracker("Writing zip".into());
     write_tracker.set_total(files.len());
-    write_tracker.notify();
 
     write_zip(output, &files, &extra_files, &exclude, Some(SafePath::new("overrides").unwrap()), modal_action, &write_tracker)?;
     write_tracker.set_finished(ProgressTrackerFinishType::Normal);
@@ -231,8 +228,7 @@ async fn export_curseforge_pack(
     modal_action: &ModalAction,
 ) -> Result<(), ExportError> {
     check_cancel(modal_action)?;
-    let collect_tracker = ProgressTracker::new("Collecting files...".into(), backend.send.clone());
-    modal_action.trackers.push(collect_tracker.clone());
+    let collect_tracker = modal_action.push_tracker("Collecting files...".into());
 
     let files = collect_files(
         &instance.dot_minecraft_path,
@@ -242,11 +238,9 @@ async fn export_curseforge_pack(
         &backend.directories.synced_dir,
         modal_action,
     )?;
-    collect_tracker.notify();
     collect_tracker.set_finished(ProgressTrackerFinishType::Normal);
 
-    let hash_tracker = ProgressTracker::new("Hashing mods".into(), backend.send.clone());
-    modal_action.trackers.push(hash_tracker.clone());
+    let hash_tracker = modal_action.push_tracker("Hashing mods".into());
 
     let resolved = resolve_curseforge_files(backend, instance, options, &files, modal_action, &hash_tracker).await?;
     hash_tracker.set_finished(ProgressTrackerFinishType::Normal);
@@ -256,7 +250,8 @@ async fn export_curseforge_pack(
         exclude.insert(resolved_file.rel_path.clone());
     }
 
-    let manifest_json = build_curseforge_manifest(instance, options, &resolved)?;
+    let loader_version = instance.determine_loader_version(backend).await;
+    let manifest_json = build_curseforge_manifest(instance, loader_version, options, &resolved)?;
     let modlist_html = build_curseforge_modlist(&resolved);
     let extra_files = vec![
         ("manifest.json".to_string(), manifest_json),
@@ -264,10 +259,8 @@ async fn export_curseforge_pack(
         ("modlist.html".to_string(), modlist_html),
     ];
 
-    let write_tracker = ProgressTracker::new("Writing zip".into(), backend.send.clone());
-    modal_action.trackers.push(write_tracker.clone());
+    let write_tracker = modal_action.push_tracker("Writing zip".into());
     write_tracker.set_total(files.len());
-    write_tracker.notify();
 
     write_zip(output, &files, &extra_files, &exclude, Some(SafePath::new("overrides").unwrap()), modal_action, &write_tracker)?;
     write_tracker.set_finished(ProgressTrackerFinishType::Normal);
@@ -435,11 +428,14 @@ fn should_skip(rel: &SafePath, rel_to_dot_minecraft: Option<&SafePath>, options:
 
     match name {
         "logs" | "crash-reports" => !options.include_logs,
-        ".cache" | "downloads" => !options.include_cache,
+        ".cache" | "downloads" | ".fabric" => !options.include_cache,
         "saves" => !options.include_saves,
         "mods" => !options.include_mods,
         "resourcepacks" => !options.include_resourcepacks,
+        "shaderpacks" => !options.include_shaders,
         "config" => !options.include_configs,
+        "screenshots" => !options.include_screenshots,
+        "backups" => !options.include_backups,
         _ => false,
     }
 }
@@ -470,7 +466,7 @@ fn ends_with_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
         return false;
     }
     let start = haystack.len() - needle.len();
-    haystack[start..].eq_ignore_ascii_case(needle)
+    haystack.as_bytes()[start..].eq_ignore_ascii_case(needle.as_bytes())
 }
 
 async fn resolve_modrinth_files(
@@ -489,6 +485,10 @@ async fn resolve_modrinth_files(
         }
         if is_resourcepack_file(&file.rel) && options.include_resourcepacks {
             candidates.push(file);
+            continue;
+        }
+        if is_shaderpack_file(&file.rel) && options.include_shaders {
+            candidates.push(file);
         }
     }
 
@@ -497,7 +497,6 @@ async fn resolve_modrinth_files(
     }
 
     tracker.set_total(candidates.len());
-    tracker.notify();
 
     let mut buf = vec![0_u8; 128 * 1024];
 
@@ -511,7 +510,6 @@ async fn resolve_modrinth_files(
     for file in candidates {
         check_cancel(modal_action)?;
         tracker.add_count(1);
-        tracker.notify();
 
         let (_sha1_hex, sha512_hex, _size) = compute_hashes(&file.abs, modal_action, &mut buf)?;
 
@@ -625,11 +623,14 @@ async fn resolve_curseforge_files(
         }
         if is_resourcepack_file(&file.rel) && options.include_resourcepacks {
             candidates.push((file.rel.clone(), file.abs.clone(), file.enabled, false));
+            continue;
+        }
+        if is_shaderpack_file(&file.rel) && options.include_shaders {
+            candidates.push((file.rel.clone(), file.abs.clone(), file.enabled, false));
         }
     }
 
     tracker.set_total(candidates.len());
-    tracker.notify();
 
     let mut fingerprint_to_candidate: HashMap<u32, (SafePath, bool, bool)> = HashMap::new();
     let mut fingerprints = Vec::new();
@@ -637,7 +638,6 @@ async fn resolve_curseforge_files(
     for (rel, abs, enabled, is_mod) in candidates {
         check_cancel(modal_action)?;
         tracker.add_count(1);
-        tracker.notify();
         let fingerprint = compute_murmur2(&abs)?;
         fingerprint_to_candidate.insert(fingerprint, (rel, enabled, is_mod));
         fingerprints.push(fingerprint);
@@ -678,6 +678,7 @@ async fn resolve_curseforge_files(
 
 fn build_modrinth_index(
     instance: &ExportInstanceData,
+    loader_version: Option<Ustr>,
     options: &ExportOptions,
     resolved: &[ModrinthResolvedFile],
 ) -> Result<Vec<u8>, String> {
@@ -685,7 +686,7 @@ fn build_modrinth_index(
 
     let mut dependencies = indexmap::IndexMap::new();
     dependencies.insert("minecraft".into(), config.minecraft_version.as_str().into());
-    if let Some(loader_version) = config.preferred_loader_version {
+    if let Some(loader_version) = loader_version {
         match config.loader {
             Loader::Fabric => { dependencies.insert("fabric-loader".into(), loader_version.as_str().into()); },
             Loader::Forge => { dependencies.insert("forge".into(), loader_version.as_str().into()); },
@@ -729,6 +730,7 @@ fn build_modrinth_index(
 
 fn build_curseforge_manifest(
     instance: &ExportInstanceData,
+    loader_version: Option<Ustr>,
     options: &ExportOptions,
     resolved: &[CurseforgeResolvedFile],
 ) -> Result<Vec<u8>, String> {
@@ -750,7 +752,7 @@ fn build_curseforge_manifest(
     minecraft.insert("version".into(), serde_json::Value::from(config.minecraft_version.as_str()));
 
     let mut mod_loaders = Vec::new();
-    if let Some(loader_version) = config.preferred_loader_version {
+    if let Some(loader_version) = loader_version {
         let loader_id = match config.loader {
             Loader::Fabric => format!("fabric-{}", loader_version),
             Loader::Forge => format!("forge-{}", loader_version),
@@ -846,7 +848,6 @@ fn write_zip(
                 zip.write_all(&buffer[..read]).map_err(|e| e.to_string())?;
             }
             tracker.add_count(1);
-            tracker.notify();
         }
 
         check_cancel(modal_action)?;
@@ -961,6 +962,18 @@ fn is_mod_file(path: &SafePath) -> bool {
 
 fn is_resourcepack_file(path: &SafePath) -> bool {
     if !path.starts_with("resourcepacks") {
+        return false;
+    }
+
+    let Some(filename) = path.file_name() else {
+        return false;
+    };
+
+    filename.ends_with(".zip") || filename.ends_with(".zip.disabled")
+}
+
+fn is_shaderpack_file(path: &SafePath) -> bool {
+    if !path.starts_with("shaderpacks") {
         return false;
     }
 

@@ -32,12 +32,10 @@ impl InstancesPage {
             SelectState::new(delegate, Some(IndexPath::new(row)), window, cx)
         });
         cx.subscribe(&view_dropdown, |_, _, event: &SelectEvent<NamedDropdown<InstancesViewMode>>, cx| {
-            let SelectEvent::Confirm(Some(value)) = event else {
+            let SelectEvent::Confirm(Some(view)) = event else {
                 return;
             };
-            let view = value.item;
-
-            InterfaceConfig::get_mut(cx).instances_view_mode = view;
+            InterfaceConfig::get_mut(cx).instances_view_mode = *view;
         }).detach();
 
         Self {
@@ -62,7 +60,7 @@ impl Page for InstancesPage {
             }));
         // wrapping in div makes it not take up the full space of the titlebar
         let select_view = div()
-            .child(Select::new(&self.view_dropdown).title_prefix(format!("{}: ", t::instance::view())));
+            .child(Select::new(&self.view_dropdown).title_prefix(format!("{}: ", t::instance::view_mode())));
 
         h_flex().gap_3().child(create_instance).child(select_view)
     }
@@ -129,7 +127,7 @@ impl SelectDelegate for VersionList {
         None
     }
 
-    fn perform_search(&mut self, query: &str, _window: &mut Window, _: &mut Context<SelectState<Self>>) -> Task<()> {
+    fn perform_search(&mut self, query: &str, _window: &mut Window, _: &mut App) -> Task<()> {
         let lower_query = query.to_lowercase();
 
         self.matched_versions = self

@@ -15,8 +15,8 @@ pub struct TitleBar {
 }
 
 #[derive(Default)]
-struct TitleBarState {
-    should_move: bool,
+pub(crate) struct TitleBarState {
+    pub(crate) should_move: bool,
 }
 
 impl RenderOnce for TitleBar {
@@ -49,7 +49,7 @@ impl RenderOnce for TitleBar {
                             .h_full()
                             .gap_1()
                             .child(Button::new("update")
-                                .label("Update Available")
+                                .label(t::system::update::available())
                                 .success()
                                 .compact()
                                 .small()
@@ -132,7 +132,7 @@ impl RenderOnce for TitleBar {
                         })
                         .when_some(self.update, |this, update| {
                             this.child(Button::new("update")
-                                .label("Update Available")
+                                .label(t::system::update::available())
                                 .success()
                                 .compact()
                                 .small()

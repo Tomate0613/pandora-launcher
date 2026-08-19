@@ -1,18 +1,16 @@
 use std::{collections::VecDeque, sync::Arc};
 
-use bridge::{instance::InstanceID, message::MessageToBackend};
+use bridge::instance::InstanceID;
 use gpui::{prelude::*, *};
 use gpui_component::{
-    ActiveTheme as _, Disableable, Icon, InteractiveElementExt, WindowExt, button::{Button, ButtonVariants}, h_flex, input::{Input, InputState}, notification::{Notification, NotificationType}, scroll::ScrollableElement, tooltip::Tooltip, v_flex
+    ActiveTheme as _, Icon, InteractiveElementExt, WindowExt, h_flex, notification::{Notification, NotificationType}, scroll::ScrollableElement, tooltip::Tooltip, v_flex
 };
-use rand::Rng;
 use rustc_hash::FxHashMap;
 use schema::pandora_update::UpdatePrompt;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::{
-    component::{menu::{MenuGroup, MenuGroupItem}, page_path::PagePath, resize_panel::{ResizePanel, ResizePanelState}, shrinking_text::ShrinkingText, title_bar::TitleBar}, entity::{
+    component::{menu::{MenuGroup, MenuGroupItem}, page_path::PagePath, resize_panel::{ResizePanel, ResizePanelState}, shrinking_text::ShrinkingText, title_bar::{TitleBar, TitleBarState}}, entity::{
         DataEntities, account::AccountExt, instance::{InstanceAddedEvent, InstanceEntries, InstanceModifiedEvent, InstanceMovedToTopEvent, InstanceRemovedEvent}
     }, icon::PandoraIcon, interface_config::InterfaceConfig, modals, pages::{curseforge_page::CurseforgeSearchPage, import::ImportPage, instance::instance_page::InstancePage, instances_page::InstancesPage, modrinth_page::ModrinthSearchPage, modrinth_project_page::ModrinthProjectPage, page::Page, skins_page::SkinsPage, syncing_page::SyncingPage}, png_render_cache,
 };
@@ -76,7 +74,7 @@ impl PageType {
                     t::curseforge::name().into()
                 }
             },
-            PageType::Import => "Import".into(),
+            PageType::Import => t::import::label().into(),
             PageType::Syncing => t::instance::sync::label().into(),
             PageType::ModrinthProject { project_title, .. } => project_title.clone(),
             PageType::InstancePage { name } => {
@@ -280,7 +278,6 @@ impl LauncherUI {
                     CurseforgeSearchPage::new(installing_for.flatten(), data, window, cx)
                 });
                 Ok(LauncherPage::Curseforge(page))
-
             },
             PageType::Import => {
                 Ok(LauncherPage::Import(cx.new(|cx| ImportPage::new(data, window, cx))))
@@ -405,7 +402,10 @@ impl Render for LauncherUI {
             }
         }
 
-        let page_type = InterfaceConfig::get(cx).main_page.clone();
+        let (page_type, hide_skins) = {
+            let config = InterfaceConfig::get(cx);
+            (config.main_page.clone(), config.hide_skins)
+        };
 
         let library_group = MenuGroup::new("Minecraft")
             .child(MenuGroupItem::new(t::instance::title())
@@ -413,11 +413,11 @@ impl Render for LauncherUI {
                 .on_click(cx.listener(|launcher, _, window, cx| {
                     launcher.switch_page(PageType::Instances, &[], window, cx);
                 })))
-            .child(MenuGroupItem::new(t::skins::title())
+            .when(!hide_skins, |this| this.child(MenuGroupItem::new(t::skins::title())
                 .active(page_type == PageType::Skins)
                 .on_click(cx.listener(|launcher, _, window, cx| {
                     launcher.switch_page(PageType::Skins, &[], window, cx);
-                })));
+                }))));
 
         let content_group = MenuGroup::new(t::instance::content::title())
             .child(MenuGroupItem::new(t::modrinth::name())
@@ -431,8 +431,8 @@ impl Render for LauncherUI {
                     launcher.switch_page(PageType::Curseforge { installing_for: None }, &[], window, cx);
                 })));
 
-        let files_group = MenuGroup::new("Files")
-            .child(MenuGroupItem::new("Import")
+        let files_group = MenuGroup::new(t::instance::sync::files())
+            .child(MenuGroupItem::new(t::import::label())
                 .active(page_type == PageType::Import)
                 .on_click(cx.listener(|launcher, _, window, cx| {
                     launcher.switch_page(PageType::Import, &[], window, cx);
@@ -504,139 +504,15 @@ impl Render for LauncherUI {
             .child(account_head.size_8().min_w_8().min_h_8())
             .child(ShrinkingText::new(account_name))
             .on_click({
-                let accounts = self.data.accounts.clone();
-                let backend_handle = self.data.backend_handle.clone();
+                let data = self.data.clone();
                 move |_, window, cx| {
-                    if accounts.read(cx).accounts.is_empty() {
-                        crate::root::start_new_account_login(&backend_handle, window, cx);
+                    if data.accounts.read(cx).accounts.is_empty() {
+                        crate::root::start_new_account_login(&data.backend_handle, window, cx);
                         return;
                     }
 
-                    let accounts = accounts.clone();
-                    let backend_handle = backend_handle.clone();
-                    window.open_sheet_at(gpui_component::Placement::Left, cx, move |sheet, _, cx| {
-                        let hide_skins = InterfaceConfig::get(cx).hide_skins;
-
-                        let (accounts, selected_account) = {
-                            let accounts = accounts.read(cx);
-                            (accounts.accounts.clone(), accounts.selected_account_uuid)
-                        };
-
-                        let items = accounts.iter().map(|account| {
-                            let head = if hide_skins {
-                                gpui::img(ImageSource::Resource(Resource::Embedded("images/hidden_head.png".into())))
-                            } else if let Some(head) = &account.head {
-                                let resize = png_render_cache::ImageTransformation::Resize { width: 32, height: 32 };
-                                png_render_cache::render_with_transform(head.clone(), resize, cx)
-                            } else {
-                                gpui::img(ImageSource::Resource(Resource::Embedded("images/default_head.png".into())))
-                            };
-                            let account_name = account.username(InterfaceConfig::get(cx).hide_usernames);
-
-                            let selected = Some(account.uuid) == selected_account;
-
-                            h_flex()
-                                .gap_2()
-                                .w_full()
-                                .child(Button::new(account_name.clone())
-                                    .min_w_0()
-                                    .flex_1()
-                                    .when(selected, |this| {
-                                        this.info()
-                                    })
-                                    .h_10()
-                                    .child(head.size_8().min_w_8().min_h_8())
-                                    .child(div().pt_0p5().line_clamp(2).line_height(rems(1.0)).child(account_name.clone()))
-                                    .when(!selected, |this| {
-                                        this.on_click({
-                                            let backend_handle = backend_handle.clone();
-                                            let uuid = account.uuid;
-                                            move |_, _, _| {
-                                                backend_handle.send(MessageToBackend::SelectAccount { uuid });
-                                            }
-                                        })
-                                    }))
-                                .child(Button::new((account_name.clone(), 1))
-                                    .icon(PandoraIcon::Trash2)
-                                    .h_10()
-                                    .w_10()
-                                    .danger()
-                                    .on_click({
-                                        let backend_handle = backend_handle.clone();
-                                        let uuid = account.uuid;
-                                        move |_, _, _| {
-                                            backend_handle.send(MessageToBackend::DeleteAccount { uuid });
-                                        }
-                                    }))
-
-                        });
-
-                        sheet
-                            .when(cfg!(target_os = "macos"), |this| this.pt_5())
-                            .title(t::account::title())
-                            .child(v_flex()
-                                .gap_2()
-                                .child(Button::new("add-account").h_10().success().icon(PandoraIcon::Plus).label(t::account::add::label()).on_click({
-                                    let backend_handle = backend_handle.clone();
-                                    move |_, window, cx| {
-                                        crate::root::start_new_account_login(&backend_handle, window, cx);
-                                    }
-                                }))
-                                .child(Button::new("add-offline").h_10().success().icon(PandoraIcon::Plus).label(t::account::add::offline()).on_click({
-                                    let backend_handle = backend_handle.clone();
-                                    move |_, window, cx| {
-                                        let name_input = cx.new(|cx| {
-                                            InputState::new(window, cx)
-                                        });
-                                        let uuid_input = cx.new(|cx| {
-                                            InputState::new(window, cx).placeholder(t::account::uuid_random())
-                                        });
-                                        let backend_handle = backend_handle.clone();
-                                        window.open_dialog(cx, move |dialog, _, cx| {
-                                            let username = name_input.read(cx).value();
-                                            let valid_name = username.len() >= 1 && username.len() <= 16 &&
-                                                username.as_bytes().iter().all(|c| *c > 32 && *c < 127);
-                                            let uuid = uuid_input.read(cx).value();
-                                            let valid_uuid = uuid.is_empty() || Uuid::try_parse(&uuid).is_ok();
-
-                                            let valid = valid_name && valid_uuid;
-
-                                            let backend_handle = backend_handle.clone();
-                                            let mut add_button = Button::new("add").label(t::account::add::submit()).disabled(!valid).on_click(move |_, window, cx| {
-                                                window.close_all_dialogs(cx);
-
-                                                let uuid = if let Ok(uuid) = Uuid::try_parse(&uuid) {
-                                                   uuid
-                                                } else {
-                                                    let uuid: u128 = rand::thread_rng().r#gen();
-                                                    let uuid = (uuid & !0xF0000000000000000000) | 0x30000000000000000000; // set version to 3
-                                                    Uuid::from_u128(uuid)
-                                                };
-
-                                                backend_handle.send(MessageToBackend::AddOfflineAccount {
-                                                    name: username.clone().into(),
-                                                    uuid
-                                                });
-                                            });
-
-                                            if valid {
-                                                add_button = add_button.success();
-                                            }
-
-                                            dialog.title(t::account::add::offline())
-                                                .child(v_flex()
-                                                    .gap_2()
-                                                    .child(crate::labelled(t::account::name(), Input::new(&name_input)))
-                                                    .child(crate::labelled(t::account::uuid(), Input::new(&uuid_input)))
-                                                    .child(add_button)
-                                                )
-                                        });
-                                    }
-                                }))
-                                .children(items)
-                            )
-
-                    });
+                    let build = crate::modals::accounts::build_accounts_sheet(&data, window, cx);
+                    window.open_sheet_at(gpui_component::Placement::Left, cx, build);
                 }
             });
 
@@ -666,16 +542,64 @@ impl Render for LauncherUI {
             })
             .child(PandoraIcon::Bug)
             .tooltip(move |window, cx| {
-                Tooltip::new("Report a bug").build(window, cx)
+                Tooltip::new(t::system::report_bug()).build(window, cx)
             })
             .on_click({
                 move |_, window, cx| {
                     open_bug_report_url(window, cx);
                 }
             });
+        let discord_invite = option_env!("DISCORD_INVITE").unwrap_or("https://pandora.moulberry.com/discord");
+        let discord_button = div()
+            .id("discord-button")
+            .p_2()
+            .rounded(cx.theme().radius)
+            .hover(|this| {
+                this.bg(cx.theme().sidebar_accent)
+                    .text_color(cx.theme().sidebar_accent_foreground)
+            })
+            .child(PandoraIcon::Discord)
+            .tooltip(move |window, cx| {
+                Tooltip::new(t::system::join_discord()).build(window, cx)
+            })
+            .on_click({
+                move |_, _, cx| {
+                    cx.open_url(discord_invite);
+                }
+            });
 
+        let header_drag_state = window.use_keyed_state("sidebar-header-drag-state", cx, |_, _| TitleBarState::default());
         let header = h_flex()
-            .when_else(cfg!(target_os = "macos"), |this| this.pt(px(9.0)), |this| this.pt(px(14.0)))
+            .id("sidebar-header")
+            .window_control_area(WindowControlArea::Drag)
+            .on_mouse_down_out(window.listener_for(&header_drag_state, |state, _, _, _| {
+                state.should_move = false;
+            }))
+            .when(cfg!(target_os = "linux"), |this| {
+                this.on_double_click(|_, window, _| window.zoom_window())
+            })
+            .when(cfg!(target_os = "macos"), |this| {
+                this.on_double_click(|_, window, _| window.titlebar_double_click())
+            })
+            .on_mouse_down(
+                MouseButton::Left,
+                window.listener_for(&header_drag_state, |state, _, _, _| {
+                    state.should_move = true;
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                window.listener_for(&header_drag_state, |state, _, _, _| {
+                    state.should_move = false;
+                }),
+            )
+            .on_mouse_move(window.listener_for(&header_drag_state, |state, _, window, _| {
+                if state.should_move {
+                    state.should_move = false;
+                    window.start_window_move();
+                }
+            }))
+            .when_else(cfg!(target_os = "macos"), |this| this.pt(px(41.0)), |this| this.pt(px(14.0)))
             .px_5()
             .pb_2()
             .gap_2()
@@ -684,7 +608,10 @@ impl Render for LauncherUI {
             .text_size(rems(0.9375))
             .child(Icon::new(PandoraIcon::Pandora).size_8().min_w_8().min_h_8())
             .child(t::common::app_name());
-        let footer_buttons = h_flex().child(settings_button).child(bug_report_button);
+        let footer_buttons = h_flex()
+            .child(settings_button)
+            .child(bug_report_button)
+            .when(!discord_invite.is_empty(), |this| this.child(discord_button));
         let footer = v_flex().pb_2().px_2().items_center().min_w_full().max_w_full().w_full().child(footer_buttons).child(account_button);
         let sidebar = v_flex()
             .size_full()
@@ -692,14 +619,6 @@ impl Render for LauncherUI {
             .max_size_full()
             .bg(cx.theme().sidebar)
             .text_color(cx.theme().sidebar_foreground)
-            .when(cfg!(target_os = "macos"), |this| {
-                this.child(h_flex()
-                    .id("sidebar-double-clicker")
-                    .w_full()
-                    .h(px(32.0))
-                    .on_double_click(|_, window, _| window.titlebar_double_click())
-                )
-            })
             .child(header)
             .child(v_flex()
                 .flex_1()

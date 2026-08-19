@@ -1,9 +1,12 @@
+pub mod accounts;
 pub mod create_instance;
 pub mod curseforge_install;
 pub mod delete_instance;
+pub mod duplicate_instance;
 pub mod export_instance;
 pub mod generic;
 pub mod modrinth_install;
 pub mod select_icon;
 pub mod settings;
+pub mod unzip_modpack;
 pub mod update_prompt;

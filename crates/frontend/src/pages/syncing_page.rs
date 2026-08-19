@@ -79,6 +79,7 @@ impl SyncingPage {
 
         let disable_tooltip = t::instance::sync::already_exists(cannot_sync_count, &name);
         let backend_handle = self.backend_handle.clone();
+        let target_name = name.clone();
         let checkbox = Checkbox::new(name.clone())
             .label(label)
             .disabled(disabled)
@@ -87,14 +88,14 @@ impl SyncingPage {
             .on_click(cx.listener(move |page, value, _, cx| {
 
             backend_handle.send(MessageToBackend::SetSyncing {
-                target: name.clone(),
+                target: target_name.clone(),
                 is_file,
                 value: *value,
             });
 
-            page.loading.insert(name.clone());
+            page.loading.insert(target_name.clone());
             if page.pending.is_empty() {
-                page.pending.insert(name.clone());
+                page.pending.insert(target_name.clone());
                 page.update_sync_state(cx);
             }
         }));
@@ -105,15 +106,29 @@ impl SyncingPage {
             base = base.child(Spinner::new());
         } else {
             if (enabled || synced_count > 0) && !is_file {
-                base = base.child(h_flex().gap_1().flex_shrink().text_color(info)
+                base = base.child(h_flex().gap_1().flex_shrink(1.0).text_color(info)
                     .child(t::instance::sync::folders_count(synced_count, sync_state.total_count))
                 );
             }
             if enabled && cannot_sync_count > 0 {
-                base = base.child(h_flex().gap_1().flex_shrink().text_color(warning)
-                    .child(PandoraIcon::TriangleAlert)
-                    .child(t::instance::sync::unable_count(cannot_sync_count, sync_state.total_count))
-                );
+                let cannot_sync_tooltip = if let Some(sync_target_state) = sync_state.targets.get(&name) {
+                    format!(
+                        "{}\n{}",
+                        t::instance::sync::unable_instances_tooltip(),
+                        sync_target_state.cannot_sync_instances.join("\n")
+                    )
+                } else {
+                    t::instance::sync::unable_instances_tooltip().to_string()
+                };
+                let warning_id = format!("cannot_sync_warning_{}", name);
+
+                base = base.child(Button::new(warning_id)
+                    .text()
+                    .text_color(warning)
+                    .compact()
+                    .icon(PandoraIcon::TriangleAlert)
+                    .label(t::instance::sync::unable_count(cannot_sync_count, sync_state.total_count))
+                    .tooltip(cannot_sync_tooltip));
             }
         }
 
@@ -147,22 +162,24 @@ impl Render for SyncingPage {
         let warning = cx.theme().red;
         let info = cx.theme().blue;
         let content = v_flex().size_full().p_3().gap_3()
+            .items_start()
             .child(t::instance::sync::description())
             .child(Button::new("open").info().icon(PandoraIcon::FolderOpen).label(t::instance::sync::open_folder()).on_click(move |_, window, cx| {
                 crate::open_folder(&sync_folder, window, cx);
-            }).w_72())
-            .child(div().border_b_1().border_color(cx.theme().border).text_lg().child(t::instance::sync::files()))
+            }))
+            .child(div().w_full().border_b_1().border_color(cx.theme().border).text_lg().child(t::instance::sync::files()))
             .child(self.create_entry(sync_state, "options.txt".into(), true,  t::instance::sync::targets::options().into(), warning, info, cx))
             .child(self.create_entry(sync_state, "servers.dat".into(), true, t::instance::sync::targets::servers().into(), warning, info, cx))
             .child(self.create_entry(sync_state, "command_history.txt".into(), true, t::instance::sync::targets::commands().into(), warning, info, cx))
             .child(self.create_entry(sync_state, "hotbar.nbt".into(), true, t::instance::sync::targets::hotbars().into(), warning, info, cx))
-            .child(div().border_b_1().border_color(cx.theme().border).text_lg().child(t::instance::sync::folders()))
+            .child(div().w_full().border_b_1().border_color(cx.theme().border).text_lg().child(t::instance::sync::folders()))
             .child(self.create_entry(sync_state, "saves".into(), false, t::instance::sync::targets::saves().into(), warning, info, cx))
             .child(self.create_entry(sync_state, "config".into(), false, t::instance::sync::targets::config().into(), warning, info, cx))
             .child(self.create_entry(sync_state, "screenshots".into(), false, t::instance::sync::targets::screenshots().into(), warning, info, cx))
             .child(self.create_entry(sync_state, "resourcepacks".into(), false, t::instance::sync::targets::resourcepacks().into(), warning, info, cx))
+            .child(self.create_entry(sync_state, "downloads".into(), false, t::instance::sync::targets::downloads().into(), warning, info, cx))
             .child(self.create_entry(sync_state, "shaderpacks".into(), false, t::instance::sync::targets::shaderpacks().into(), warning, info, cx))
-            .child(div().border_b_1().border_color(cx.theme().border).text_lg().child(t::instance::sync::mods()))
+            .child(div().w_full().border_b_1().border_color(cx.theme().border).text_lg().child(t::instance::sync::mods()))
             .child(self.create_entry(sync_state, "flashback".into(), false, t::instance::sync::targets::flashback().into(), warning, info, cx))
             .child(self.create_entry(sync_state, "Distant_Horizons_server_data".into(), false, t::instance::sync::targets::dh().into(), warning, info, cx))
             .child(self.create_entry(sync_state, ".voxy".into(), false, t::instance::sync::targets::voxy().into(), warning, info, cx))
@@ -170,7 +187,7 @@ impl Render for SyncingPage {
             .child(self.create_entry(sync_state, "journeymap".into(), false, t::instance::sync::targets::journeymap().into(), warning, info, cx))
             .child(self.create_entry(sync_state, ".bobby".into(), false, t::instance::sync::targets::bobby().into(), warning, info, cx))
             .child(self.create_entry(sync_state, "schematics".into(), false, t::instance::sync::targets::litematic().into(), warning, info, cx))
-            .child(div().border_b_1().border_color(cx.theme().border).text_lg().child(t::instance::sync::custom()))
+            .child(div().w_full().border_b_1().border_color(cx.theme().border).text_lg().child(t::instance::sync::custom()))
             .children(sync_state.targets.iter().filter_map(|(name, state)| {
                 if !state.enabled || NAMED_SYNC_TARGETS.contains(&**name) {
                     return None;
@@ -241,6 +258,7 @@ static NAMED_SYNC_TARGETS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "config",
         "screenshots",
         "resourcepacks",
+        "downloads",
         "shaderpacks",
         "flashback",
         "Distant_Horizons_server_data",
