@@ -346,6 +346,28 @@ pub fn spawn(mut command: PandoraCommand, sandbox: PandoraSandbox, context: &mut
         builder.bind_if_exists(BindType::ReadOnly, &path);
     }
 
+    for overlay in sandbox.overlays {
+        builder.push_str("--overlay-src");
+        builder.push_os_string(overlay.source.as_os_str().to_os_string());
+
+        match overlay.state {
+            Some(state) => {
+                std::fs::create_dir_all(&state.upper)?;
+                std::fs::create_dir_all(&state.work)?;
+
+                builder.push_str("--overlay");
+                builder.push_os_string(state.upper.as_os_str().to_os_string());
+                builder.push_os_string(state.work.as_os_str().to_os_string());
+                builder.push_os_string(overlay.target.as_os_str().to_os_string());
+            }
+
+            None => {
+                builder.push_str("--tmp-overlay");
+                builder.push_os_string(overlay.target.as_os_str().to_os_string());
+            }
+        }
+    }
+
     // Create sandboxed xdg home directories
     let sandbox_cache = sandbox.sandbox_dir.join("cache");
     let sandbox_config = sandbox.sandbox_dir.join("config");

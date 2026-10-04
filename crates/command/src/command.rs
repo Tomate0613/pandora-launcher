@@ -200,6 +200,19 @@ impl From<PathBuf> for PandoraArg {
     }
 }
 
+#[cfg(target_os = "linux")]
+pub struct PandoraOverlayDirectories {
+    pub upper: Arc<Path>,
+    pub work: Arc<Path>,
+}
+
+#[cfg(target_os = "linux")]
+pub struct PandoraDirectoryOverlay {
+    pub source: Arc<Path>,
+    pub target: Arc<Path>,
+    pub state: Option<PandoraOverlayDirectories>,
+}
+
 pub struct PandoraSandbox {
     pub allow_read: Vec<Arc<Path>>,
     pub allow_write: Vec<Arc<Path>>,
@@ -207,6 +220,8 @@ pub struct PandoraSandbox {
 
     pub grant_network_access: bool,
 
+    #[cfg(target_os = "linux")]
+    pub overlays: Vec<PandoraDirectoryOverlay>,
     #[cfg(target_os = "linux")]
     pub sandbox_dir: Arc<Path>,
     #[cfg(windows)]
