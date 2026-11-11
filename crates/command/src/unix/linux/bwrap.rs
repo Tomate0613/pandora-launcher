@@ -65,6 +65,7 @@ const SYSTEM_FILES_RO: &[&str] = &[
     "/nix/store",
     "/run/opengl-driver",
     "/run/opengl-driver-32",
+    "/etc/egl/egl_external_platform.d",
     // NVIDIA kernel module state (needed for driver init in user ns)
     "/sys/module/nvidia",
     "/sys/module/nvidia_drm",
