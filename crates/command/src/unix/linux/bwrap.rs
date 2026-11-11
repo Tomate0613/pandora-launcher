@@ -89,6 +89,7 @@ static ALLOWED_ENV_VARS: Lazy<FxHashSet<&'static OsStr>> = Lazy::new(|| {
         "WAYLAND_DISPLAY",
         "PULSE_SERVER",
         "LD_LIBRARY_PATH",
+        "__GL_THREADED_OPTIMIZATIONS"
     ].iter().map(OsStr::new).collect()
 });
 
